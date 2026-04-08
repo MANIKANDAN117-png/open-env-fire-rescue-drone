@@ -76,24 +76,24 @@ TASKS = [
         name="Scout And Map",
         description="Reveal the civilian location by scanning the target structure before resources are exhausted.",
         grader="grade_task1_scout_and_map",
-        score_range=TaskScoreRange(min=0.0, max=1.0),
-        success_criteria="A powered scan reveals the civilian and task1_scout_map reaches 1.0.",
+        score_range=TaskScoreRange(min=0.01, max=0.99),
+        success_criteria="A powered scan reveals the civilian and task1_scout_map advances toward 0.99.",
     ),
     TaskDefinition(
         id="fire_containment",
         name="Fire Containment",
         description="Suppress the active fire tiles and keep the rescue corridor from collapsing under the selected difficulty.",
         grader="grade_task2_containment",
-        score_range=TaskScoreRange(min=0.0, max=1.0),
-        success_criteria="All initial fire tiles are progressively cleared and task2_containment approaches 1.0.",
+        score_range=TaskScoreRange(min=0.01, max=0.99),
+        success_criteria="All initial fire tiles are progressively cleared and task2_containment approaches 0.99.",
     ),
     TaskDefinition(
         id="coordinated_rescue",
         name="Coordinated Rescue",
         description="Clear the route, project a safe corridor, and escort the civilian to the exit with role coordination.",
         grader="grade_task3_coordinated_rescue",
-        score_range=TaskScoreRange(min=0.0, max=1.0),
-        success_criteria="The civilian reaches the exit after suppression and a guide drone projects the safe path.",
+        score_range=TaskScoreRange(min=0.01, max=0.99),
+        success_criteria="The civilian reaches the exit after suppression and task3_coordinated_rescue approaches 0.99.",
     ),
 ]
 
@@ -280,7 +280,7 @@ def validate_environment() -> ValidateResponse:
         "has_tasks": True,
         "has_three_tasks": len(TASKS) >= 3,
         "task_scores_bounded": all(
-            task.score_range.min == 0.0 and task.score_range.max == 1.0
+            0.0 < task.score_range.min < task.score_range.max < 1.0
             for task in TASKS
         ),
     }
