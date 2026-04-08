@@ -16,8 +16,8 @@ dependencies = [
   "fastapi>=0.115,<1",
   "uvicorn[standard]>=0.30,<1",
   "pydantic>=2.7,<3",
-  "openai>=1.40,<2",
-  "openenv-core>=0.2.0",
+  "openai>=2.7.2,<3",
+  "openenv-core>=0.2.0,<0.3",
 ]
 
 [project.scripts]
