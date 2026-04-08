@@ -25,6 +25,7 @@ from models import (
     ResetResponse,
     RootResponse,
     ScenarioName,
+    StateResponse,
     StepInfoResponse,
     StepRequest,
     StepResponse,
@@ -304,17 +305,14 @@ def reset_environment(request: Optional[ResetRequest] = Body(default=None)) -> R
         reward=0.0,
         done=False,
         info={},
-        scenario=CURRENT_SCENARIO,
-        difficulty=CURRENT_SCENARIO,
-        observation=initial_state,
     )
 
 
-@app.get("/state", response_model=ObservationResponse, tags=["core"])
-def get_state() -> ObservationResponse:
+@app.get("/state", response_model=StateResponse, tags=["core"])
+def get_state() -> StateResponse:
     with ENV_LOCK:
         observation = ENV.state()
-    return _build_observation(observation)
+    return StateResponse(state=_build_observation(observation))
 
 
 @app.post("/step", response_model=StepResponse, tags=["core"])
@@ -323,9 +321,9 @@ def step_environment(request: Optional[StepRequest] = Body(default=None)) -> Ste
     with ENV_LOCK:
         observation, reward, done, info = ENV.step({"commands": resolved_request.commands})
     return StepResponse(
-        observation=_build_observation(observation),
-        reward=reward,
-        done=done,
+        state=_build_observation(observation),
+        reward=float(reward),
+        done=bool(done),
         info=_build_info(info),
     )
 
