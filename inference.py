@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from openai import OpenAI
 
@@ -12,11 +12,54 @@ from env import FireDroneSwarmEnv
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-20b")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+TASK_NAME = os.getenv("MY_ENV_V4_TASK", "all")
+
+TASK_RUNS: List[Dict[str, Any]] = [
+    {
+        "task": "scout_and_map",
+        "difficulty": "easy",
+        "scenario": "Easy",
+        "grader_key": "task1_scout_map",
+        "max_steps": 60,
+    },
+    {
+        "task": "fire_containment",
+        "difficulty": "medium",
+        "scenario": "Medium",
+        "grader_key": "task2_containment",
+        "max_steps": 80,
+    },
+    {
+        "task": "coordinated_rescue",
+        "difficulty": "hard",
+        "scenario": "Hard",
+        "grader_key": "task3_coordinated_rescue",
+        "max_steps": 100,
+    },
+]
 
 
-def emit(tag: str, payload: Dict[str, Any]) -> None:
-    print(f"{tag} {json.dumps(payload, separators=(',', ':'), ensure_ascii=False)}", flush=True)
+def clamp_score(score: float) -> float:
+    return float(round(max(0.01, min(0.99, float(score))), 3))
+
+
+def format_token(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "none"
+    if isinstance(value, float):
+        return f"{value:.3f}".rstrip("0").rstrip(".") if "." in f"{value:.3f}" else f"{value:.3f}"
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "none"
+        return "|".join(format_token(item) for item in value)
+    return str(value).replace(" ", "_")
+
+
+def emit_fields(tag: str, **fields: Any) -> None:
+    payload = " ".join(f"{key}={format_token(value)}" for key, value in fields.items())
+    print(f"{tag} {payload}".rstrip(), flush=True)
 
 
 def safe_json_loads(text: str) -> Optional[Dict[str, Any]]:
@@ -37,16 +80,18 @@ def safe_json_loads(text: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def request_llm_brief(observation: Dict[str, Any]) -> Dict[str, Any]:
+def request_llm_brief(observation: Dict[str, Any], task_run: Dict[str, Any]) -> Dict[str, Any]:
     fallback = {
         "priority": "contain_fire_then_rescue",
         "risk": "interior_fire_and_single_civilian",
         "note": "proxy_call_not_attempted",
     }
     prompt = {
+        "task": task_run["task"],
+        "difficulty": task_run["difficulty"],
+        "scenario": task_run["scenario"],
         "sensor_alert": observation.get("sensor_alert"),
         "drone_count": len(observation.get("drones", [])),
-        "difficulty": observation.get("scenario", "Medium"),
         "instruction": "Return compact JSON with keys priority, risk, note. Respond only with valid JSON.",
     }
 
@@ -109,9 +154,22 @@ def request_llm_brief(observation: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def run_episode(scenario: str = "Medium", max_steps: int = 80) -> None:
-    total_reward = 0.0
-    final_info: Dict[str, Any] = {
+def selected_task_runs() -> List[Dict[str, Any]]:
+    requested = TASK_NAME.strip().lower()
+    if not requested or requested == "all":
+        return list(TASK_RUNS)
+
+    requested_parts = {part.strip().lower() for part in requested.split(",") if part.strip()}
+    matched = [
+        task_run
+        for task_run in TASK_RUNS
+        if task_run["task"].lower() in requested_parts or task_run["difficulty"].lower() in requested_parts
+    ]
+    return matched or list(TASK_RUNS)
+
+
+def default_final_info() -> Dict[str, Any]:
+    return {
         "graders": {
             "task1_scout_map": 0.01,
             "task2_containment": 0.01,
@@ -120,6 +178,11 @@ def run_episode(scenario: str = "Medium", max_steps: int = 80) -> None:
         "fire_tiles_remaining": 0,
         "civilian_reached_exit": False,
     }
+
+
+def run_single_task(task_run: Dict[str, Any]) -> None:
+    total_reward = 0.0
+    final_info = default_final_info()
     llm_brief = {
         "priority": "contain_fire_then_rescue",
         "risk": "interior_fire_and_single_civilian",
@@ -127,86 +190,73 @@ def run_episode(scenario: str = "Medium", max_steps: int = 80) -> None:
     }
     last_step = 0
     done = False
-    start_emitted = False
+    status = "error"
 
     try:
         env = FireDroneSwarmEnv(num_drones=6)
-        observation = env.reset(scenario)
+        observation = env.reset(task_run["scenario"])
         commander = MissionCommander()
         final_info["fire_tiles_remaining"] = len(env.fire_intensity)
-        llm_brief = request_llm_brief(observation)
+        llm_brief = request_llm_brief(observation, task_run)
 
-        emit(
+        emit_fields(
             "[START]",
-            {
-                "scenario": scenario,
-                "api_base_url": API_BASE_URL,
-                "model_name": MODEL_NAME,
-                "llm_brief": llm_brief,
-                "max_steps": max_steps,
-            },
+            task=task_run["task"],
+            difficulty=task_run["difficulty"],
+            scenario=task_run["scenario"],
+            api_base_url=API_BASE_URL,
+            model_name=MODEL_NAME,
+            max_steps=task_run["max_steps"],
+            llm_note=llm_brief["note"],
         )
-        start_emitted = True
 
-        for step_index in range(1, max_steps + 1):
+        for step_index in range(1, int(task_run["max_steps"]) + 1):
             plan = commander.act(env, observation)
             observation, reward, done, info = env.step({"commands": plan["commands"]})
             total_reward += reward
             final_info = info
             last_step = step_index
-            emit(
+
+            emit_fields(
                 "[STEP]",
-                {
-                    "step": step_index,
-                    "commands": plan["commands"],
-                    "reward": round(reward, 3),
-                    "done": done,
-                    "task1_scout_map": round(info["graders"]["task1_scout_map"], 3),
-                    "task2_containment": round(info["graders"]["task2_containment"], 3),
-                    "task3_coordinated_rescue": round(info["graders"]["task3_coordinated_rescue"], 3),
-                    "fire_tiles_remaining": info["fire_tiles_remaining"],
-                    "civilian_reached_exit": info["civilian_reached_exit"],
-                },
+                task=task_run["task"],
+                difficulty=task_run["difficulty"],
+                step=step_index,
+                reward=round(float(reward), 3),
+                done=bool(done),
+                task1_scout_map=clamp_score(info["graders"]["task1_scout_map"]),
+                task2_containment=clamp_score(info["graders"]["task2_containment"]),
+                task3_coordinated_rescue=clamp_score(info["graders"]["task3_coordinated_rescue"]),
+                fire_tiles_remaining=int(info["fire_tiles_remaining"]),
+                civilian_reached_exit=bool(info["civilian_reached_exit"]),
+                commands=plan["commands"],
             )
+
             if done:
+                status = "success"
                 break
 
-        end_payload = {
-            "status": "success" if done else "max_steps_reached",
-            "total_reward": round(total_reward, 3),
-            "steps": last_step,
-            "task1_scout_map": round(final_info["graders"]["task1_scout_map"], 3),
-            "task2_containment": round(final_info["graders"]["task2_containment"], 3),
-            "task3_coordinated_rescue": round(final_info["graders"]["task3_coordinated_rescue"], 3),
-            "fire_tiles_remaining": final_info["fire_tiles_remaining"],
-            "civilian_reached_exit": final_info["civilian_reached_exit"],
-        }
-    except Exception as exc:  # pragma: no cover - final validator safeguard
-        if not start_emitted:
-            emit(
-                "[START]",
-                {
-                    "scenario": scenario,
-                    "api_base_url": API_BASE_URL,
-                    "model_name": MODEL_NAME,
-                    "llm_brief": llm_brief,
-                    "max_steps": max_steps,
-                },
-            )
-        end_payload = {
-            "status": "error",
-            "total_reward": round(total_reward, 3),
-            "steps": last_step,
-            "task1_scout_map": round(final_info["graders"]["task1_scout_map"], 3),
-            "task2_containment": round(final_info["graders"]["task2_containment"], 3),
-            "task3_coordinated_rescue": round(final_info["graders"]["task3_coordinated_rescue"], 3),
-            "fire_tiles_remaining": final_info["fire_tiles_remaining"],
-            "civilian_reached_exit": final_info["civilian_reached_exit"],
-            "error_type": type(exc).__name__,
-        }
+        if not done:
+            status = "max_steps_reached"
+    except Exception as exc:  # pragma: no cover - validator safety
+        status = f"error:{type(exc).__name__}"
 
-    emit("[END]", end_payload)
+    final_score = clamp_score(final_info["graders"].get(task_run["grader_key"], 0.01))
+    emit_fields(
+        "[END]",
+        task=task_run["task"],
+        difficulty=task_run["difficulty"],
+        score=final_score,
+        steps=last_step,
+        status=status,
+        total_reward=round(float(total_reward), 3),
+    )
+
+
+def run_all_tasks(task_runs: Iterable[Dict[str, Any]]) -> None:
+    for task_run in task_runs:
+        run_single_task(task_run)
 
 
 if __name__ == "__main__":
-    run_episode()
+    run_all_tasks(selected_task_runs())
