@@ -113,9 +113,9 @@ def run_episode(scenario: str = "Medium", max_steps: int = 80) -> None:
     total_reward = 0.0
     final_info: Dict[str, Any] = {
         "graders": {
-            "task1_scout_map": 0.0,
-            "task2_containment": 0.0,
-            "task3_coordinated_rescue": 0.0,
+            "task1_scout_map": 0.01,
+            "task2_containment": 0.01,
+            "task3_coordinated_rescue": 0.01,
         },
         "fire_tiles_remaining": 0,
         "civilian_reached_exit": False,
