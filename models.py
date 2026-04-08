@@ -49,9 +49,9 @@ class CoordinationSummary(BaseModel):
 
 
 class GraderSummary(BaseModel):
-    task1_scout_map: float = Field(..., ge=0.0, le=1.0)
-    task2_containment: float = Field(..., ge=0.0, le=1.0)
-    task3_coordinated_rescue: float = Field(..., ge=0.0, le=1.0)
+    task1_scout_map: float = Field(..., gt=0.0, lt=1.0)
+    task2_containment: float = Field(..., gt=0.0, lt=1.0)
+    task3_coordinated_rescue: float = Field(..., gt=0.0, lt=1.0)
 
 
 class StepInfoResponse(BaseModel):
@@ -132,8 +132,8 @@ class HealthResponse(BaseModel):
 
 
 class TaskScoreRange(BaseModel):
-    min: float = Field(..., ge=0.0, le=1.0, description="Minimum possible task score.")
-    max: float = Field(..., ge=0.0, le=1.0, description="Maximum possible task score.")
+    min: float = Field(..., gt=0.0, lt=1.0, description="Minimum possible task score.")
+    max: float = Field(..., gt=0.0, lt=1.0, description="Maximum possible task score.")
 
 
 class TaskDefinition(BaseModel):
