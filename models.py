@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+from typing import Dict, List, Literal, Optional, Tuple
+
+from pydantic import BaseModel, Field, model_validator
+
+
+ScenarioName = Literal["Easy", "Medium", "Hard"]
+
+
+class DroneState(BaseModel):
+    id: str = Field(..., description="Unique drone identifier.")
+    x: int = Field(..., description="Current drone X coordinate in the grid.")
+    y: int = Field(..., description="Current drone Y coordinate in the grid.")
+    battery_level: int = Field(..., ge=0, le=100, description="Remaining battery percentage.")
+    payload_capacity: int = Field(..., ge=0, description="Remaining payload units.")
+    role: str = Field(..., description="Drone role, for example extinguish, rescue, or guide.")
+
+
+class DifficultyProfile(BaseModel):
+    difficulty: ScenarioName = Field(..., description="Resolved simulator difficulty level.")
+    step_penalty: float = Field(..., description="Base reward penalty applied per step at this difficulty.")
+    battery_start: int = Field(..., ge=0, le=100, description="Initial drone battery at reset.")
+    payload_start: int = Field(..., ge=0, description="Initial payload capacity at reset.")
+    active_fire_tiles: int = Field(..., ge=0, description="Number of active fire tiles at mission start.")
+    rescue_reward: float = Field(..., description="Reward granted when the civilian reaches the exit.")
+    containment_reward: float = Field(..., description="Reward granted when a fire tile is fully extinguished.")
+
+
+class ObservationResponse(BaseModel):
+    city_grid: List[List[int]] = Field(
+        ...,
+        description="Observed grid. 0=empty/unrevealed, 1=wall, 2=fire, 3=civilian, 4=exit.",
+    )
+    drones: List[DroneState] = Field(..., description="Current drone states.")
+    sensor_alert: Tuple[int, int] = Field(..., description="Sensor alert location in grid coordinates.")
+    scenario: ScenarioName = Field(..., description="Active scenario label used by the simulator.")
+    difficulty_profile: DifficultyProfile = Field(..., description="Resolved difficulty parameters for the active mission.")
+
+
+class CoordinationSummary(BaseModel):
+    blocking_fire_cleared: bool = Field(..., description="Whether the fire blocking the rescue route was cleared.")
+    suppression_drones: List[str] = Field(..., description="Drone ids that contributed to fire suppression.")
+    path_drones: List[str] = Field(..., description="Drone ids that projected or maintained rescue paths.")
+
+
+class GraderSummary(BaseModel):
+    task1_scout_map: float = Field(..., ge=0.0, le=1.0)
+    task2_containment: float = Field(..., ge=0.0, le=1.0)
+    task3_coordinated_rescue: float = Field(..., ge=0.0, le=1.0)
+
+
+class StepInfoResponse(BaseModel):
+    events: List[str] = Field(..., description="Human-readable events produced during the step.")
+    graders: GraderSummary = Field(..., description="Task grading summary.")
+    fire_tiles_remaining: int = Field(..., ge=0, description="Number of active fire tiles still burning.")
+    civilian_position: Tuple[int, int] = Field(..., description="Current civilian position.")
+    civilian_reached_exit: bool = Field(..., description="Whether the civilian has reached the exit.")
+    coordination: CoordinationSummary = Field(..., description="Rescue coordination status.")
+
+
+class ResetRequest(BaseModel):
+    scenario: Optional[ScenarioName] = Field(
+        default=None,
+        description="Backward-compatible scenario field. If provided, it behaves the same as difficulty.",
+    )
+    difficulty: Optional[ScenarioName] = Field(
+        default=None,
+        description="Preferred difficulty selector for the simulator. Accepted values: Easy, Medium, Hard.",
+    )
+
+    @model_validator(mode="after")
+    def ensure_selector(self) -> "ResetRequest":
+        if self.scenario is None and self.difficulty is None:
+            self.scenario = "Medium"
+        return self
+
+    @property
+    def resolved_difficulty(self) -> ScenarioName:
+        return self.difficulty or self.scenario or "Medium"
+
+
+class ResetResponse(BaseModel):
+    scenario: ScenarioName = Field(..., description="Scenario that is now active.")
+    difficulty: ScenarioName = Field(..., description="Resolved difficulty currently active in the simulator.")
+    observation: ObservationResponse = Field(..., description="Fresh observation immediately after reset.")
+
+
+class StepRequest(BaseModel):
+    commands: List[str] = Field(
+        default_factory=list,
+        description=(
+            "One command per active drone. Example: "
+            "move(drone_0, right), scan(drone_1, 2), spray(drone_2, left), "
+            "drop_ball(drone_0), project_path(drone_1, up), noop(drone_2)"
+        ),
+    )
+
+
+class StepResponse(BaseModel):
+    observation: ObservationResponse = Field(..., description="Observation after the step is executed.")
+    reward: float = Field(..., description="Reward generated by this environment step.")
+    done: bool = Field(..., description="Whether the episode is complete.")
+    info: StepInfoResponse = Field(..., description="Detailed step metadata.")
+
+
+class HealthResponse(BaseModel):
+    status: str = Field(..., description="Simple service health indicator.")
+    scenario: ScenarioName = Field(..., description="Scenario currently loaded in memory.")
+    step_count: int = Field(..., ge=0, description="How many steps have been executed since the last reset.")
+
+
+class RootResponse(BaseModel):
+    service: str = Field(..., description="Service name.")
+    version: str = Field(..., description="Service version.")
+    docs_url: str = Field(..., description="Swagger UI URL.")
+    openapi_url: str = Field(..., description="OpenAPI JSON URL.")
+    endpoints: Dict[str, str] = Field(..., description="Main public API endpoints.")
