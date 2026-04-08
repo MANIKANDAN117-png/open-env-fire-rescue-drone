@@ -253,22 +253,30 @@ class FireDroneSwarmEnv:
         return self.state(), float(round(reward, 3)), done, info
 
     def grade_task1_scout_and_map(self) -> float:
-        return 1.0 if self.civilian_discovered_with_power else 0.0
+        raw_score = 0.99 if self.civilian_discovered_with_power else 0.01
+        return self._bounded_score(raw_score)
 
     def grade_task2_containment(self) -> float:
         if self.initial_fire_tiles == 0:
-            return 1.0
+            return self._bounded_score(0.99)
         cleared = self.initial_fire_tiles - len(self.fire_intensity)
-        return max(0.0, min(1.0, cleared / self.initial_fire_tiles))
+        raw_score = cleared / self.initial_fire_tiles
+        return self._bounded_score(raw_score)
 
     def grade_task3_coordinated_rescue(self) -> float:
-        coordinated = bool(
-            self.civilian_reached_exit
-            and not self.fire_intensity
-            and self.fire_suppression_drone_ids
-            and self.path_projection_drone_ids
-        )
-        return 1.0 if coordinated else 0.0
+        progress = 0.01
+        if self.fire_suppression_drone_ids:
+            progress += 0.24
+        if self.path_projection_drone_ids:
+            progress += 0.24
+        if not self.fire_intensity:
+            progress += 0.24
+        if self.civilian_reached_exit:
+            progress += 0.26
+        return self._bounded_score(progress)
+
+    def _bounded_score(self, raw_score: float) -> float:
+        return float(round(max(0.01, min(0.99, raw_score)), 3))
 
     def _difficulty_profile_payload(self) -> Dict[str, Any]:
         return {
@@ -517,6 +525,8 @@ class FireDroneSwarmEnv:
             for drone in self.drones.values()
         )
         if not escort_nearby:
+            return 0.0, []
+        if not self.projected_paths:
             return 0.0, []
 
         path = self._bfs_path(self.civilian_pos, self.exit_pos)
