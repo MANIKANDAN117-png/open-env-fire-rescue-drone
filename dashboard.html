@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GREXO Fire Rescue Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+  <div id="appShell">
+    <header class="topbar">
+      <div class="brandBlock">
+        <div class="brandMark">G</div>
+        <div>
+          <h1>GREXO Fire Rescue Drone AI</h1>
+          <p class="subline">Mission-control dashboard for live city response, fire suppression, and civilian rescue.</p>
+        </div>
+      </div>
+      <div class="topActions">
+        <a class="linkChip" href="/docs" target="_blank" rel="noreferrer">Swagger Docs</a>
+        <a class="linkChip" href="/openapi.json" target="_blank" rel="noreferrer">OpenAPI</a>
+        <div class="statusChip" id="connectStatus">NO SIGNAL</div>
+      </div>
+    </header>
+
+    <main class="missionGrid">
+      <aside class="leftRail">
+        <section class="panel statusPanel">
+          <div class="sectionLabel">Mission Status</div>
+          <div class="missionState" id="phaseText">STANDBY / WAITING FOR LAUNCH</div>
+          <p class="missionCopy" id="cameraText">Mission idle at base station. Select a difficulty and run the simulator.</p>
+        </section>
+
+        <section class="panel statsPanel">
+          <div class="panelHeader slim">
+            <div>
+              <h2>Mission Snapshot</h2>
+              <p class="panelSubtitle">Difficulty, hazards, rescue count, and score at a glance.</p>
+            </div>
+          </div>
+          <div class="statsGrid">
+            <div class="statTile">
+              <span class="statLabel">Difficulty</span>
+              <strong class="statValue" id="difficultyBadge">MEDIUM</strong>
+            </div>
+            <div class="statTile">
+              <span class="statLabel">Active Fires</span>
+              <strong class="statValue hot" id="activeFires">0</strong>
+            </div>
+            <div class="statTile">
+              <span class="statLabel">Trapped</span>
+              <strong class="statValue amber" id="trappedHumans">0</strong>
+            </div>
+            <div class="statTile">
+              <span class="statLabel">Rescued</span>
+              <strong class="statValue green" id="rescuedHumans">0</strong>
+            </div>
+            <div class="statTile">
+              <span class="statLabel">Tick</span>
+              <strong class="statValue cyan" id="tickValue">0</strong>
+            </div>
+            <div class="statTile">
+              <span class="statLabel">Score</span>
+              <strong class="statValue cyan" id="scoreValue">0.000</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel controlPanel">
+          <div class="panelHeader">
+            <div>
+              <h2>Mission Controls</h2>
+              <p class="panelSubtitle">Launch the simulator, switch difficulty, or inject live events.</p>
+            </div>
+          </div>
+
+          <div class="difficultyRow" id="difficultyRow">
+            <button class="difficultyBtn" data-scenario="Easy" type="button">Easy</button>
+            <button class="difficultyBtn active" data-scenario="Medium" type="button">Medium</button>
+            <button class="difficultyBtn" data-scenario="Hard" type="button">Hard</button>
+          </div>
+
+          <p class="difficultyHelp" id="difficultyHelp">Medium difficulty uses balanced fire spread, escort pressure, and reward penalties.</p>
+
+          <div class="buttonColumn">
+            <button class="actionBtn primary" id="runSimulationBtn">Run Mission Simulator</button>
+            <button class="actionBtn" id="toggleAutoBtn">Auto AI: Active</button>
+            <button class="actionBtn secondary" id="followLiveBtn">Follow Live Mission</button>
+          </div>
+
+          <div class="panelDivider"></div>
+
+          <div class="actionGrid">
+            <button class="actionBtn warn" id="spawnFireBtn">Spawn Fire</button>
+            <button class="actionBtn rescue" id="spawnHumanBtn">Spawn Human</button>
+            <button class="actionBtn secondary" id="refillBtn">Refill All</button>
+            <button class="actionBtn danger" id="resetBtn">Full Reset</button>
+          </div>
+        </section>
+
+        <section class="panel manualPanel">
+          <div class="panelHeader slim">
+            <div>
+              <h2>Manual Override</h2>
+              <p class="panelSubtitle">Select a drone and nudge it inside the live mission.</p>
+            </div>
+          </div>
+
+          <div class="dronePills" id="dronePills"></div>
+          <p class="selectedDroneText" id="selectedDroneText">Select a drone to manually reposition it.</p>
+
+          <div class="dpad">
+            <div></div>
+            <button class="dpadBtn" data-command="move_up">UP</button>
+            <div></div>
+            <button class="dpadBtn" data-command="move_left">LEFT</button>
+            <div class="dpadCenter">+</div>
+            <button class="dpadBtn" data-command="move_right">RIGHT</button>
+            <div></div>
+            <button class="dpadBtn" data-command="move_down">DOWN</button>
+            <div></div>
+          </div>
+        </section>
+      </aside>
+
+      <section class="centerRail">
+        <section class="panel mapPanel">
+          <div class="panelHeader mapHeader">
+            <div>
+              <h2>City Mission Map</h2>
+              <p class="panelSubtitle" id="targetBanner">Waiting for mission target.</p>
+            </div>
+            <div class="legendRow">
+              <span class="legendChip"><span class="legendDot legendDotCyan"></span>Drone</span>
+              <span class="legendChip"><span class="legendDot legendDotRed"></span>Fire</span>
+              <span class="legendChip"><span class="legendDot legendDotAmber"></span>Target</span>
+              <span class="legendChip"><span class="legendDot legendDotRoute"></span>Route</span>
+            </div>
+          </div>
+
+          <div class="mapStage" id="mapStage">
+            <canvas id="mapBackdropCanvas" aria-hidden="true"></canvas>
+            <canvas id="mapCanvas"></canvas>
+          </div>
+
+          <div class="mapFooterRow">
+            <div class="mapFooterBlock">
+              <span class="miniLabel">Dispatch Analysis</span>
+              <strong>Live City Overlay</strong>
+              <p id="mapMissionNote">Using a generated tactical city blueprint with live drone, fire, target, and route overlays.</p>
+            </div>
+            <div class="mapFooterBlock small">
+              <span class="miniLabel">Map Layer</span>
+              <strong>Readable Blueprint View</strong>
+              <p>The city map stays dominant while the simulator draws only tactical overlays on top.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <aside class="rightRail">
+        <section class="panel interiorPanel">
+          <div class="panelHeader">
+            <div>
+              <h2>Building Interior Rescue Grid</h2>
+              <p class="panelSubtitle" id="buildingStatus">Interior rescue grid is waiting for mission telemetry.</p>
+            </div>
+            <div class="legendColumn">
+              <span class="legendChip"><span class="legendDot legendDotWall"></span>Walls</span>
+              <span class="legendChip"><span class="legendDot legendDotOpen"></span>Open</span>
+              <span class="legendChip"><span class="legendDot legendDotRed"></span>Fire</span>
+              <span class="legendChip"><span class="legendDot legendDotCivilian"></span>Civilian</span>
+              <span class="legendChip"><span class="legendDot legendDotExit"></span>Exit</span>
+              <span class="legendChip"><span class="legendDot legendDotCyan"></span>Drone</span>
+            </div>
+          </div>
+
+          <div class="interiorStage" id="interiorStage">
+            <canvas id="interiorBackdropCanvas" aria-hidden="true"></canvas>
+            <canvas id="interiorCanvas"></canvas>
+          </div>
+        </section>
+
+        <section class="panel telemetryPanel">
+          <div class="panelHeader slim">
+            <div>
+              <h2>Telemetry</h2>
+              <p class="panelSubtitle">Reward pressure, severity, and analysis progress.</p>
+            </div>
+          </div>
+
+          <div class="telemetryGrid">
+            <div class="miniMetric">
+              <span class="miniLabel">Last Reward</span>
+              <strong id="lastRewardValue">0.000</strong>
+            </div>
+            <div class="miniMetric">
+              <span class="miniLabel">Total Reward</span>
+              <strong id="totalRewardValue">0.000</strong>
+            </div>
+            <div class="miniMetric">
+              <span class="miniLabel">Severity</span>
+              <strong id="severityValue">LOW</strong>
+            </div>
+            <div class="miniMetric">
+              <span class="miniLabel">Response Boost</span>
+              <strong id="responseBoostValue">0</strong>
+            </div>
+          </div>
+
+          <div class="analysisBlock">
+            <div class="progressLabelRow">
+              <span>Building Analysis</span>
+              <span id="analysisPercent">0%</span>
+            </div>
+            <div class="progressTrack"><div class="progressFill" id="analysisBar"></div></div>
+          </div>
+
+          <p class="severityNote" id="severityNote">Awaiting mission data.</p>
+        </section>
+
+        <section class="panel fleetPanel">
+          <div class="panelHeader slim">
+            <div>
+              <h2>Drone Fleet</h2>
+              <p class="panelSubtitle">Live unit status, objective, and resource levels.</p>
+            </div>
+          </div>
+          <div id="droneList" class="droneList"></div>
+        </section>
+
+        <section class="panel logPanel">
+          <div class="panelHeader slim">
+            <div>
+              <h2>Mission Log</h2>
+              <p class="panelSubtitle">Recent operator-facing events and automated actions.</p>
+            </div>
+          </div>
+          <div class="logBox" id="logBox"></div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>
