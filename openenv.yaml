@@ -268,24 +268,36 @@ schemas:
 tasks:
   - id: scout_and_map
     name: Scout And Map
+    difficulty: easy
+    max_steps: 60
     description: Reveal the civilian location by scanning the target structure.
     grader: grade_task1_scout_and_map
+    grader_type: deterministic
+    grader_description: Returns the bounded scout/map task score in the open interval (0,1).
     score_range:
       min: 0.01
       max: 0.99
     success_criteria: A successful powered scan discovers the civilian and advances the score toward 0.99.
   - id: fire_containment
     name: Fire Containment
+    difficulty: medium
+    max_steps: 80
     description: Suppress the active fire footprint while preserving the rescue corridor.
     grader: grade_task2_containment
+    grader_type: deterministic
+    grader_description: Returns the bounded containment task score in the open interval (0,1).
     score_range:
       min: 0.01
       max: 0.99
     success_criteria: Initial fire tiles are extinguished and the containment score approaches 0.99.
   - id: coordinated_rescue
     name: Coordinated Rescue
+    difficulty: hard
+    max_steps: 100
     description: Project a safe route and escort the civilian to the exit after suppression.
     grader: grade_task3_coordinated_rescue
+    grader_type: deterministic
+    grader_description: Returns the bounded coordinated rescue task score in the open interval (0,1).
     score_range:
       min: 0.01
       max: 0.99
