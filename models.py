@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -81,9 +81,13 @@ class ResetRequest(BaseModel):
 
 
 class ResetResponse(BaseModel):
+    state: ObservationResponse = Field(..., description="Initial state returned immediately after reset.")
+    reward: float = Field(..., description="Reset reward, fixed at 0.0 for a fresh episode.")
+    done: bool = Field(..., description="Reset completion flag, always false on a fresh episode.")
+    info: Dict[str, Any] = Field(..., description="Additional reset metadata, safe to keep empty.")
     scenario: ScenarioName = Field(..., description="Scenario that is now active.")
     difficulty: ScenarioName = Field(..., description="Resolved difficulty currently active in the simulator.")
-    observation: ObservationResponse = Field(..., description="Fresh observation immediately after reset.")
+    observation: ObservationResponse = Field(..., description="Backward-compatible alias of the initial state.")
 
 
 class StepRequest(BaseModel):
@@ -108,6 +112,32 @@ class HealthResponse(BaseModel):
     status: str = Field(..., description="Simple service health indicator.")
     scenario: ScenarioName = Field(..., description="Scenario currently loaded in memory.")
     step_count: int = Field(..., ge=0, description="How many steps have been executed since the last reset.")
+
+
+class TaskScoreRange(BaseModel):
+    min: float = Field(..., ge=0.0, le=1.0, description="Minimum possible task score.")
+    max: float = Field(..., ge=0.0, le=1.0, description="Maximum possible task score.")
+
+
+class TaskDefinition(BaseModel):
+    id: str = Field(..., description="Stable task identifier.")
+    name: str = Field(..., description="Human-readable task name.")
+    description: str = Field(..., description="What the task expects the agent to accomplish.")
+    grader: str = Field(..., description="Grader function or metric name used to score the task.")
+    score_range: TaskScoreRange = Field(..., description="Allowed score interval for the task.")
+    success_criteria: str = Field(..., description="Brief statement of the win condition for the task.")
+
+
+class TaskListResponse(BaseModel):
+    count: int = Field(..., ge=0, description="How many tasks are defined by the environment.")
+    tasks: List[TaskDefinition] = Field(..., description="Available environment tasks and grader metadata.")
+
+
+class ValidateResponse(BaseModel):
+    valid: bool = Field(..., description="Whether the environment is currently OpenEnv-compatible.")
+    service: str = Field(..., description="Service name reported by the validator.")
+    version: str = Field(..., description="Service version reported by the validator.")
+    checks: Dict[str, bool] = Field(..., description="Boolean results for the main validator checks.")
 
 
 class RootResponse(BaseModel):
