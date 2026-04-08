@@ -21,12 +21,12 @@ source = { registry = "https://pypi.org/simple" }
 
 [[package]]
 name = "openai"
-version = "1.75.0"
+version = "2.7.2"
 source = { registry = "https://pypi.org/simple" }
 
 [[package]]
 name = "openenv-core"
-version = "0.2.0"
+version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
 
 [[package]]
