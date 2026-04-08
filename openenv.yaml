@@ -2,7 +2,7 @@ name: grexo-fire-rescue
 version: "1.3.0"
 description: >
   OpenEnv-compatible fire rescue drone swarm simulator with FastAPI endpoints,
-  typed Pydantic schemas, deterministic graders, and a mission-control dashboard.
+  typed schemas, deterministic graders, and a mission-control dashboard.
 author: GREXO
 license: MIT
 tags:
@@ -15,77 +15,249 @@ tags:
 api:
   base_url: /
   endpoints:
-    health:
-      method: GET
-      path: /health
-      response_model: HealthResponse
     reset:
       method: POST
       path: /reset
       request_model: ResetRequest
       response_model: ResetResponse
-      response_fields:
-        - state
-        - reward
-        - done
-        - info
+      request_body:
+        content_type: application/json
+        required: false
+      response_body:
+        content_type: application/json
+        fields:
+          - state
+          - reward
+          - done
+          - info
     state:
       method: GET
       path: /state
-      response_model: ObservationResponse
+      response_model: StateResponse
+      response_body:
+        content_type: application/json
+        fields:
+          - state
     step:
       method: POST
       path: /step
       request_model: StepRequest
       response_model: StepResponse
-    tasks:
-      method: GET
-      path: /tasks
-      response_model: TaskListResponse
-    validate:
-      method: GET
-      path: /validate
-      response_model: ValidateResponse
+      request_body:
+        content_type: application/json
+        required: false
+      response_body:
+        content_type: application/json
+        fields:
+          - state
+          - reward
+          - done
+          - info
 
-models:
-  observation:
-    type: ObservationResponse
-    fields:
-      - name: city_grid
-        type: List[List[int]]
-        description: Observed city grid with walls, fire, civilian, and exit markers.
-      - name: drones
-        type: List[DroneState]
-        description: Current drone positions, roles, battery levels, and payload state.
-      - name: sensor_alert
-        type: Tuple[int, int]
-        description: Initial alert coordinate used to seed the mission.
-      - name: scenario
-        type: ScenarioName
-        description: Active difficulty label.
-      - name: difficulty_profile
-        type: DifficultyProfile
-        description: Difficulty parameters for the active mission.
-  action:
-    type: StepRequest
-    fields:
-      - name: commands
-        type: List[str]
-        description: Ordered command strings, one per drone when needed.
-  reward:
-    type: float
-    description: Scalar environment reward returned by the step endpoint.
-
-inputs:
-  reset:
-    selectors:
+schemas:
+  ResetRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      scenario:
+        type: string
+        enum: [Easy, Medium, Hard]
+      difficulty:
+        type: string
+        enum: [Easy, Medium, Hard]
+  StepRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      commands:
+        type: array
+        items:
+          type: string
+    required: []
+  DroneState:
+    type: object
+    additionalProperties: false
+    properties:
+      id:
+        type: string
+      x:
+        type: integer
+      y:
+        type: integer
+      battery_level:
+        type: integer
+      payload_capacity:
+        type: integer
+      role:
+        type: string
+    required:
+      - id
+      - x
+      - y
+      - battery_level
+      - payload_capacity
+      - role
+  DifficultyProfile:
+    type: object
+    additionalProperties: false
+    properties:
+      difficulty:
+        type: string
+        enum: [Easy, Medium, Hard]
+      step_penalty:
+        type: number
+      battery_start:
+        type: integer
+      payload_start:
+        type: integer
+      active_fire_tiles:
+        type: integer
+      rescue_reward:
+        type: number
+      containment_reward:
+        type: number
+    required:
       - difficulty
+      - step_penalty
+      - battery_start
+      - payload_start
+      - active_fire_tiles
+      - rescue_reward
+      - containment_reward
+  ObservationResponse:
+    type: object
+    additionalProperties: false
+    properties:
+      city_grid:
+        type: array
+        items:
+          type: array
+          items:
+            type: integer
+      drones:
+        type: array
+        items:
+          $ref: "#/schemas/DroneState"
+      sensor_alert:
+        type: array
+        minItems: 2
+        maxItems: 2
+        items:
+          type: integer
+      scenario:
+        type: string
+        enum: [Easy, Medium, Hard]
+      difficulty_profile:
+        $ref: "#/schemas/DifficultyProfile"
+    required:
+      - city_grid
+      - drones
+      - sensor_alert
       - scenario
-    allowed_values:
-      - Easy
-      - Medium
-      - Hard
-    default: Medium
+      - difficulty_profile
+  CoordinationSummary:
+    type: object
+    additionalProperties: false
+    properties:
+      blocking_fire_cleared:
+        type: boolean
+      suppression_drones:
+        type: array
+        items:
+          type: string
+      path_drones:
+        type: array
+        items:
+          type: string
+    required:
+      - blocking_fire_cleared
+      - suppression_drones
+      - path_drones
+  GraderSummary:
+    type: object
+    additionalProperties: false
+    properties:
+      task1_scout_map:
+        type: number
+      task2_containment:
+        type: number
+      task3_coordinated_rescue:
+        type: number
+    required:
+      - task1_scout_map
+      - task2_containment
+      - task3_coordinated_rescue
+  StepInfoResponse:
+    type: object
+    additionalProperties: false
+    properties:
+      events:
+        type: array
+        items:
+          type: string
+      graders:
+        $ref: "#/schemas/GraderSummary"
+      fire_tiles_remaining:
+        type: integer
+      civilian_position:
+        type: array
+        minItems: 2
+        maxItems: 2
+        items:
+          type: integer
+      civilian_reached_exit:
+        type: boolean
+      coordination:
+        $ref: "#/schemas/CoordinationSummary"
+    required:
+      - events
+      - graders
+      - fire_tiles_remaining
+      - civilian_position
+      - civilian_reached_exit
+      - coordination
+  StateResponse:
+    type: object
+    additionalProperties: false
+    properties:
+      state:
+        $ref: "#/schemas/ObservationResponse"
+    required:
+      - state
+  ResetResponse:
+    type: object
+    additionalProperties: false
+    properties:
+      state:
+        $ref: "#/schemas/ObservationResponse"
+      reward:
+        type: number
+      done:
+        type: boolean
+      info:
+        type: object
+    required:
+      - state
+      - reward
+      - done
+      - info
+  StepResponse:
+    type: object
+    additionalProperties: false
+    properties:
+      state:
+        $ref: "#/schemas/ObservationResponse"
+      reward:
+        type: number
+      done:
+        type: boolean
+      info:
+        $ref: "#/schemas/StepInfoResponse"
+    required:
+      - state
+      - reward
+      - done
+      - info
 
 tasks:
   - id: scout_and_map
