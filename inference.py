@@ -9,9 +9,9 @@ from openai import OpenAI
 from dashboard_backend import MissionCommander
 from env import FireDroneSwarmEnv
 
-API_BASE_URL = os.environ["API_BASE_URL"]
-API_KEY = os.environ["API_KEY"]
-MODEL_NAME = os.environ["MODEL_NAME"]
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
+MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-20b")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 
@@ -38,59 +38,78 @@ def safe_json_loads(text: str) -> Optional[Dict[str, Any]]:
 
 
 def request_llm_brief(observation: Dict[str, Any]) -> Dict[str, Any]:
-    default_brief = {
+    fallback = {
         "priority": "contain_fire_then_rescue",
         "risk": "interior_fire_and_single_civilian",
-        "note": "proxy_call_completed",
+        "note": "proxy_call_not_attempted",
     }
-    client = OpenAI(
-        base_url=os.environ["API_BASE_URL"],
-        api_key=os.environ["API_KEY"],
-    )
     prompt = {
-        "sensor_alert": observation["sensor_alert"],
-        "drone_count": len(observation["drones"]),
+        "sensor_alert": observation.get("sensor_alert"),
+        "drone_count": len(observation.get("drones", [])),
         "difficulty": observation.get("scenario", "Medium"),
         "instruction": "Return compact JSON with keys priority, risk, note. Respond only with valid JSON.",
     }
 
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        temperature=0,
-        max_tokens=120,
-        messages=[
-            {"role": "system", "content": "You are an emergency planning assistant. Respond only with valid JSON."},
-            {"role": "user", "content": json.dumps(prompt)},
-        ],
-    )
-    content = response.choices[0].message.content or ""
+    if not API_BASE_URL:
+        return {
+            "priority": fallback["priority"],
+            "risk": fallback["risk"],
+            "note": "proxy_call_skipped_missing_api_base_url",
+        }
+
+    if not API_KEY:
+        return {
+            "priority": fallback["priority"],
+            "risk": fallback["risk"],
+            "note": "proxy_call_skipped_missing_api_key",
+        }
+
+    try:
+        client = OpenAI(
+            base_url=API_BASE_URL,
+            api_key=API_KEY,
+        )
+    except Exception as exc:
+        return {
+            "priority": fallback["priority"],
+            "risk": fallback["risk"],
+            "note": f"proxy_client_init_failed:{type(exc).__name__}",
+        }
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            temperature=0,
+            max_tokens=120,
+            messages=[
+                {"role": "system", "content": "You are an emergency planning assistant. Respond only with valid JSON."},
+                {"role": "user", "content": json.dumps(prompt)},
+            ],
+        )
+        content = response.choices[0].message.content or ""
+    except Exception as exc:
+        return {
+            "priority": fallback["priority"],
+            "risk": fallback["risk"],
+            "note": f"proxy_call_failed:{type(exc).__name__}",
+        }
+
     parsed = safe_json_loads(content)
     if not parsed:
-        return default_brief
+        return {
+            "priority": fallback["priority"],
+            "risk": fallback["risk"],
+            "note": "proxy_call_completed_invalid_json",
+        }
+
     return {
-        "priority": str(parsed.get("priority", default_brief["priority"])),
-        "risk": str(parsed.get("risk", default_brief["risk"])),
-        "note": str(parsed.get("note", default_brief["note"])),
+        "priority": str(parsed.get("priority", fallback["priority"])),
+        "risk": str(parsed.get("risk", fallback["risk"])),
+        "note": str(parsed.get("note", "proxy_call_completed")),
     }
 
 
 def run_episode(scenario: str = "Medium", max_steps: int = 80) -> None:
-    env = FireDroneSwarmEnv(num_drones=6)
-    observation = env.reset(scenario)
-    commander = MissionCommander()
-    llm_brief = request_llm_brief(observation)
-
-    emit(
-        "[START]",
-        {
-            "scenario": scenario,
-            "api_base_url": API_BASE_URL,
-            "model_name": MODEL_NAME,
-            "llm_brief": llm_brief,
-            "max_steps": max_steps,
-        },
-    )
-
     total_reward = 0.0
     final_info: Dict[str, Any] = {
         "graders": {
@@ -98,13 +117,37 @@ def run_episode(scenario: str = "Medium", max_steps: int = 80) -> None:
             "task2_containment": 0.0,
             "task3_coordinated_rescue": 0.0,
         },
-        "fire_tiles_remaining": len(env.fire_intensity),
+        "fire_tiles_remaining": 0,
         "civilian_reached_exit": False,
     }
-    done = False
+    llm_brief = {
+        "priority": "contain_fire_then_rescue",
+        "risk": "interior_fire_and_single_civilian",
+        "note": "proxy_call_not_attempted",
+    }
     last_step = 0
+    done = False
+    start_emitted = False
 
     try:
+        env = FireDroneSwarmEnv(num_drones=6)
+        observation = env.reset(scenario)
+        commander = MissionCommander()
+        final_info["fire_tiles_remaining"] = len(env.fire_intensity)
+        llm_brief = request_llm_brief(observation)
+
+        emit(
+            "[START]",
+            {
+                "scenario": scenario,
+                "api_base_url": API_BASE_URL,
+                "model_name": MODEL_NAME,
+                "llm_brief": llm_brief,
+                "max_steps": max_steps,
+            },
+        )
+        start_emitted = True
+
         for step_index in range(1, max_steps + 1):
             plan = commander.act(env, observation)
             observation, reward, done, info = env.step({"commands": plan["commands"]})
@@ -139,6 +182,17 @@ def run_episode(scenario: str = "Medium", max_steps: int = 80) -> None:
             "civilian_reached_exit": final_info["civilian_reached_exit"],
         }
     except Exception as exc:  # pragma: no cover - final validator safeguard
+        if not start_emitted:
+            emit(
+                "[START]",
+                {
+                    "scenario": scenario,
+                    "api_base_url": API_BASE_URL,
+                    "model_name": MODEL_NAME,
+                    "llm_brief": llm_brief,
+                    "max_steps": max_steps,
+                },
+            )
         end_payload = {
             "status": "error",
             "total_reward": round(total_reward, 3),
