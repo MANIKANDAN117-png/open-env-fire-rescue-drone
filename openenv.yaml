@@ -1,51 +1,132 @@
-name: grexo_fire_rescue
-version: "1.2.0"
-description: "OpenEnvx-compatible fire rescue drone swarm environment with difficulty-aware reward logic exposed through FastAPI."
-action: StepRequest
-observation: ObservationResponse
-entrypoint: app:app
+name: grexo-fire-rescue
+version: "1.3.0"
+description: >
+  OpenEnv-compatible fire rescue drone swarm simulator with FastAPI endpoints,
+  typed Pydantic schemas, deterministic graders, and a mission-control dashboard.
+author: GREXO
+license: MIT
+tags:
+  - openenv
+  - robotics
+  - emergency-response
+  - drones
+  - fastapi
+
 api:
-  reset: "POST /reset"
-  state: "GET /state"
-  step: "POST /step"
+  base_url: /
+  endpoints:
+    health:
+      method: GET
+      path: /health
+      response_model: HealthResponse
+    reset:
+      method: POST
+      path: /reset
+      request_model: ResetRequest
+      response_model: ResetResponse
+      response_fields:
+        - state
+        - reward
+        - done
+        - info
+    state:
+      method: GET
+      path: /state
+      response_model: ObservationResponse
+    step:
+      method: POST
+      path: /step
+      request_model: StepRequest
+      response_model: StepResponse
+    tasks:
+      method: GET
+      path: /tasks
+      response_model: TaskListResponse
+    validate:
+      method: GET
+      path: /validate
+      response_model: ValidateResponse
+
+models:
+  observation:
+    type: ObservationResponse
+    fields:
+      - name: city_grid
+        type: List[List[int]]
+        description: Observed city grid with walls, fire, civilian, and exit markers.
+      - name: drones
+        type: List[DroneState]
+        description: Current drone positions, roles, battery levels, and payload state.
+      - name: sensor_alert
+        type: Tuple[int, int]
+        description: Initial alert coordinate used to seed the mission.
+      - name: scenario
+        type: ScenarioName
+        description: Active difficulty label.
+      - name: difficulty_profile
+        type: DifficultyProfile
+        description: Difficulty parameters for the active mission.
+  action:
+    type: StepRequest
+    fields:
+      - name: commands
+        type: List[str]
+        description: Ordered command strings, one per drone when needed.
+  reward:
+    type: float
+    description: Scalar environment reward returned by the step endpoint.
+
 inputs:
   reset:
     selectors:
       - difficulty
       - scenario
-    values: [Easy, Medium, Hard]
+    allowed_values:
+      - Easy
+      - Medium
+      - Hard
     default: Medium
-observation_fields:
-  - city_grid
-  - drones
-  - sensor_alert
-  - scenario
-  - difficulty_profile
+
 tasks:
   - id: scout_and_map
-    description: "Reveal the civilian before the drones run out of battery."
+    name: Scout And Map
+    description: Reveal the civilian location by scanning the target structure.
     grader: grade_task1_scout_and_map
-    reward_range: [0.0, 1.0]
+    score_range:
+      min: 0.0
+      max: 1.0
+    success_criteria: A successful powered scan discovers the civilian.
   - id: fire_containment
-    description: "Clear fire tiles and maintain containment progress under the selected difficulty profile."
+    name: Fire Containment
+    description: Suppress the active fire footprint while preserving the rescue corridor.
     grader: grade_task2_containment
-    reward_range: [0.0, 1.0]
+    score_range:
+      min: 0.0
+      max: 1.0
+    success_criteria: Initial fire tiles are extinguished and the containment score reaches 1.0.
   - id: coordinated_rescue
-    description: "Project a safe route and escort the civilian to the exit after suppression."
+    name: Coordinated Rescue
+    description: Project a safe route and escort the civilian to the exit after suppression.
     grader: grade_task3_coordinated_rescue
-    reward_range: [0.0, 1.0]
-scenarios:
-  - name: Easy
-    notes: "Lower fire count, lighter penalties, more forgiving rewards."
-  - name: Medium
-    notes: "Balanced fire load and standard reward pressure."
-  - name: Hard
-    notes: "Higher fire load, lower drone resources, stricter penalties."
+    score_range:
+      min: 0.0
+      max: 1.0
+    success_criteria: The civilian exits safely after suppression and guide-path projection.
+
 runtime:
+  entrypoint: app:app
   max_steps: 220
-  resource_limits:
+  resources:
     vcpu: 2
     memory_gb: 8
+
 docs:
-  swagger: "/docs"
-  openapi: "/openapi.json"
+  swagger: /docs
+  openapi: /openapi.json
+
+inference:
+  script: inference.py
+  log_tags:
+    - "[START]"
+    - "[STEP]"
+    - "[END]"
