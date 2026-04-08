@@ -3,7 +3,7 @@ from __future__ import annotations
 from threading import Lock
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field, model_validator
@@ -14,9 +14,6 @@ from dashboard_backend import (
     JS_PATH,
     SESSION as DASHBOARD_SESSION,
     build_replay_payload,
-    guess_content_type,
-    resolve_building_target_path,
-    resolve_map_background_path,
 )
 from env import FireDroneSwarmEnv
 from models import (
@@ -27,14 +24,18 @@ from models import (
     ResetRequest,
     ResetResponse,
     RootResponse,
+    ScenarioName,
     StepInfoResponse,
     StepRequest,
     StepResponse,
-    ScenarioName,
+    TaskDefinition,
+    TaskListResponse,
+    TaskScoreRange,
+    ValidateResponse,
 )
 
 APP_TITLE = "GREXO Fire Rescue API"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 APP_DESCRIPTION = """
 FastAPI service for the GREXO fire rescue drone swarm environment.
 
@@ -42,6 +43,8 @@ Core OpenEnv endpoints:
 - `POST /reset`
 - `GET /state`
 - `POST /step`
+- `GET /tasks`
+- `GET /validate`
 
 Dashboard endpoints are also available under `/dashboard/...`.
 Swagger UI is available at `/docs` and the OpenAPI schema is available at `/openapi.json`.
@@ -66,6 +69,32 @@ app.add_middleware(
 ENV_LOCK = Lock()
 ENV = FireDroneSwarmEnv(num_drones=6)
 CURRENT_SCENARIO: ScenarioName = "Medium"
+TASKS = [
+    TaskDefinition(
+        id="scout_and_map",
+        name="Scout And Map",
+        description="Reveal the civilian location by scanning the target structure before resources are exhausted.",
+        grader="grade_task1_scout_and_map",
+        score_range=TaskScoreRange(min=0.0, max=1.0),
+        success_criteria="A powered scan reveals the civilian and task1_scout_map reaches 1.0.",
+    ),
+    TaskDefinition(
+        id="fire_containment",
+        name="Fire Containment",
+        description="Suppress the active fire tiles and keep the rescue corridor from collapsing under the selected difficulty.",
+        grader="grade_task2_containment",
+        score_range=TaskScoreRange(min=0.0, max=1.0),
+        success_criteria="All initial fire tiles are progressively cleared and task2_containment approaches 1.0.",
+    ),
+    TaskDefinition(
+        id="coordinated_rescue",
+        name="Coordinated Rescue",
+        description="Clear the route, project a safe corridor, and escort the civilian to the exit with role coordination.",
+        grader="grade_task3_coordinated_rescue",
+        score_range=TaskScoreRange(min=0.0, max=1.0),
+        success_criteria="The civilian reaches the exit after suppression and a guide drone projects the safe path.",
+    ),
+]
 
 
 class DashboardDifficultyRequest(BaseModel):
@@ -208,22 +237,6 @@ def dashboard_js() -> FileResponse:
     return FileResponse(JS_PATH, media_type="application/javascript; charset=utf-8")
 
 
-@app.get("/map-background", include_in_schema=False)
-def map_background() -> FileResponse:
-    path = resolve_map_background_path()
-    if path is None:
-        raise HTTPException(status_code=404, detail="Map background not configured")
-    return FileResponse(path, media_type=guess_content_type(path))
-
-
-@app.get("/building-target", include_in_schema=False)
-def building_target() -> FileResponse:
-    path = resolve_building_target_path()
-    if path is None:
-        raise HTTPException(status_code=404, detail="Building target not configured")
-    return FileResponse(path, media_type=guess_content_type(path))
-
-
 @app.get("/meta", response_model=RootResponse, tags=["meta"])
 def meta() -> RootResponse:
     return RootResponse(
@@ -235,6 +248,8 @@ def meta() -> RootResponse:
             "reset": "POST /reset",
             "state": "GET /state",
             "step": "POST /step",
+            "tasks": "GET /tasks",
+            "validate": "GET /validate",
             "dashboard": "GET /dashboard",
             "dashboard_state": "GET /dashboard/state",
             "health": "GET /health",
@@ -250,17 +265,48 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok", scenario=scenario, step_count=step_count)
 
 
+@app.get("/tasks", response_model=TaskListResponse, tags=["meta"])
+def list_tasks() -> TaskListResponse:
+    return TaskListResponse(count=len(TASKS), tasks=TASKS)
+
+
+@app.get("/validate", response_model=ValidateResponse, tags=["meta"])
+def validate_environment() -> ValidateResponse:
+    checks = {
+        "has_reset": True,
+        "has_state": True,
+        "has_step": True,
+        "has_tasks": True,
+        "has_three_tasks": len(TASKS) >= 3,
+        "task_scores_bounded": all(
+            task.score_range.min == 0.0 and task.score_range.max == 1.0
+            for task in TASKS
+        ),
+    }
+    return ValidateResponse(
+        valid=all(checks.values()),
+        service=APP_TITLE,
+        version=APP_VERSION,
+        checks=checks,
+    )
+
+
 @app.post("/reset", response_model=ResetResponse, tags=["core"])
-def reset_environment(request: ResetRequest) -> ResetResponse:
+def reset_environment(request: Optional[ResetRequest] = Body(default=None)) -> ResetResponse:
     global CURRENT_SCENARIO
-    resolved = request.resolved_difficulty
+    resolved = (request or ResetRequest()).resolved_difficulty
     with ENV_LOCK:
         observation = ENV.reset(resolved)
         CURRENT_SCENARIO = ENV.scenario
+    initial_state = _build_observation(observation)
     return ResetResponse(
+        state=initial_state,
+        reward=0.0,
+        done=False,
+        info={},
         scenario=CURRENT_SCENARIO,
         difficulty=CURRENT_SCENARIO,
-        observation=_build_observation(observation),
+        observation=initial_state,
     )
 
 
@@ -272,9 +318,10 @@ def get_state() -> ObservationResponse:
 
 
 @app.post("/step", response_model=StepResponse, tags=["core"])
-def step_environment(request: StepRequest) -> StepResponse:
+def step_environment(request: Optional[StepRequest] = Body(default=None)) -> StepResponse:
+    resolved_request = request or StepRequest()
     with ENV_LOCK:
-        observation, reward, done, info = ENV.step({"commands": request.commands})
+        observation, reward, done, info = ENV.step({"commands": resolved_request.commands})
     return StepResponse(
         observation=_build_observation(observation),
         reward=reward,
@@ -291,9 +338,10 @@ def dashboard_state() -> DashboardStateResponse:
 
 
 @app.post("/dashboard/reset", response_model=DashboardSimpleResponse, tags=["dashboard"])
-def dashboard_reset(request: DashboardDifficultyRequest) -> DashboardSimpleResponse:
+def dashboard_reset(request: Optional[DashboardDifficultyRequest] = Body(default=None)) -> DashboardSimpleResponse:
+    resolved_request = request or DashboardDifficultyRequest()
     with DASHBOARD_SESSION.lock:
-        payload = DASHBOARD_SESSION.reset(request.resolved)
+        payload = DASHBOARD_SESSION.reset(resolved_request.resolved)
     return DashboardSimpleResponse.model_validate(payload)
 
 
@@ -305,16 +353,18 @@ def dashboard_step(request: DashboardManualStepRequest) -> DashboardStepResponse
 
 
 @app.post("/dashboard/api/trigger_alert", response_model=DashboardActionResponse, tags=["dashboard"])
-def dashboard_trigger_alert(request: DashboardDifficultyRequest) -> DashboardActionResponse:
+def dashboard_trigger_alert(request: Optional[DashboardDifficultyRequest] = Body(default=None)) -> DashboardActionResponse:
+    resolved_request = request or DashboardDifficultyRequest()
     with DASHBOARD_SESSION.lock:
-        payload = DASHBOARD_SESSION.trigger_alert(request.resolved)
+        payload = DASHBOARD_SESSION.trigger_alert(resolved_request.resolved)
     return DashboardActionResponse.model_validate(payload)
 
 
 @app.post("/dashboard/api/toggle_auto", response_model=DashboardActionResponse, tags=["dashboard"])
-def dashboard_toggle_auto(request: DashboardDifficultyRequest) -> DashboardActionResponse:
+def dashboard_toggle_auto(request: Optional[DashboardDifficultyRequest] = Body(default=None)) -> DashboardActionResponse:
+    resolved_request = request or DashboardDifficultyRequest()
     with DASHBOARD_SESSION.lock:
-        payload = DASHBOARD_SESSION.toggle_auto(request.resolved)
+        payload = DASHBOARD_SESSION.toggle_auto(resolved_request.resolved)
     return DashboardActionResponse.model_validate(payload)
 
 
@@ -340,6 +390,20 @@ def dashboard_refill() -> DashboardRefillResponse:
 
 
 @app.post("/dashboard/api/run_ai_simulation", response_model=DashboardReplayResponse, tags=["dashboard"])
-def dashboard_run_ai_simulation(request: DashboardDifficultyRequest) -> DashboardReplayResponse:
-    payload = build_replay_payload(request.resolved)
+def dashboard_run_ai_simulation(request: Optional[DashboardDifficultyRequest] = Body(default=None)) -> DashboardReplayResponse:
+    resolved_request = request or DashboardDifficultyRequest()
+    payload = build_replay_payload(resolved_request.resolved)
     return DashboardReplayResponse.model_validate(payload)
+
+
+if __name__ == "__main__":
+    import os
+
+    import uvicorn
+
+    uvicorn.run(
+        "app:app",
+        host=os.getenv("GREXO_HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", os.getenv("GREXO_PORT", "7860"))),
+        reload=False,
+    )
