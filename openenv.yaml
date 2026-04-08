@@ -1,0 +1,51 @@
+name: grexo_fire_rescue
+version: "1.2.0"
+description: "OpenEnvx-compatible fire rescue drone swarm environment with difficulty-aware reward logic exposed through FastAPI."
+action: StepRequest
+observation: ObservationResponse
+entrypoint: app:app
+api:
+  reset: "POST /reset"
+  state: "GET /state"
+  step: "POST /step"
+inputs:
+  reset:
+    selectors:
+      - difficulty
+      - scenario
+    values: [Easy, Medium, Hard]
+    default: Medium
+observation_fields:
+  - city_grid
+  - drones
+  - sensor_alert
+  - scenario
+  - difficulty_profile
+tasks:
+  - id: scout_and_map
+    description: "Reveal the civilian before the drones run out of battery."
+    grader: grade_task1_scout_and_map
+    reward_range: [0.0, 1.0]
+  - id: fire_containment
+    description: "Clear fire tiles and maintain containment progress under the selected difficulty profile."
+    grader: grade_task2_containment
+    reward_range: [0.0, 1.0]
+  - id: coordinated_rescue
+    description: "Project a safe route and escort the civilian to the exit after suppression."
+    grader: grade_task3_coordinated_rescue
+    reward_range: [0.0, 1.0]
+scenarios:
+  - name: Easy
+    notes: "Lower fire count, lighter penalties, more forgiving rewards."
+  - name: Medium
+    notes: "Balanced fire load and standard reward pressure."
+  - name: Hard
+    notes: "Higher fire load, lower drone resources, stricter penalties."
+runtime:
+  max_steps: 220
+  resource_limits:
+    vcpu: 2
+    memory_gb: 8
+docs:
+  swagger: "/docs"
+  openapi: "/openapi.json"
