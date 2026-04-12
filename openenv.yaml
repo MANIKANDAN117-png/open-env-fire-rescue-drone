@@ -271,9 +271,10 @@ tasks:
     difficulty: easy
     max_steps: 60
     description: Reveal the civilian location by scanning the target structure.
-    grader: grade_task1_scout_and_map
-    grader_type: deterministic
-    grader_description: Returns the bounded scout/map task score in the open interval (0,1).
+    grader:
+      type: deterministic
+      name: grade_task1_scout_and_map
+      description: Uses 0.90/0.88/0.70-0.87/0.50/0.30/0.15/0.10 per-step rewards plus capped trajectory modifiers, then clamps with max(0.01, min(0.99, score)).
     score_range:
       min: 0.01
       max: 0.99
@@ -283,9 +284,10 @@ tasks:
     difficulty: medium
     max_steps: 80
     description: Suppress the active fire footprint while preserving the rescue corridor.
-    grader: grade_task2_containment
-    grader_type: deterministic
-    grader_description: Returns the bounded containment task score in the open interval (0,1).
+    grader:
+      type: deterministic
+      name: grade_task2_containment
+      description: Uses 0.90/0.88/0.70-0.87/0.50/0.30/0.15/0.10 per-step rewards plus capped trajectory modifiers, then clamps with max(0.01, min(0.99, score)).
     score_range:
       min: 0.01
       max: 0.99
@@ -295,9 +297,10 @@ tasks:
     difficulty: hard
     max_steps: 100
     description: Project a safe route and escort the civilian to the exit after suppression.
-    grader: grade_task3_coordinated_rescue
-    grader_type: deterministic
-    grader_description: Returns the bounded coordinated rescue task score in the open interval (0,1).
+    grader:
+      type: deterministic
+      name: grade_task3_coordinated_rescue
+      description: Uses 0.90/0.88/0.70-0.87/0.50/0.30/0.15/0.10 per-step rewards plus capped trajectory modifiers, then clamps with max(0.01, min(0.99, score)).
     score_range:
       min: 0.01
       max: 0.99
