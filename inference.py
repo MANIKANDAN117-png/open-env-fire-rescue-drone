@@ -13,18 +13,26 @@ MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-20b")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 BENCHMARK_NAME = "grexo-fire-rescue"
-DEFAULT_TASK_NAME = "scout_and_map"
+DEFAULT_TASKS = [
+    "scout_and_map",
+    "fire_containment",
+    "coordinated_rescue",
+]
 TASK_SCENARIOS: Dict[str, str] = {
     "scout_and_map": "Easy",
     "fire_containment": "Medium",
     "coordinated_rescue": "Hard",
 }
-MAX_STEPS = 80
+TASK_MAX_STEPS: Dict[str, int] = {
+    "scout_and_map": 60,
+    "fire_containment": 80,
+    "coordinated_rescue": 100,
+}
 
 try:
     client = OpenAI(
         base_url=API_BASE_URL,
-        api_key=HF_TOKEN,
+        api_key=HF_TOKEN
     )
 except Exception:
     client = None
@@ -48,18 +56,26 @@ def format_action(commands: List[str]) -> str:
     return "|".join(str(command).replace(" ", "_") for command in commands)
 
 
-def resolve_task_name() -> str:
-    requested = os.getenv("MY_ENV_V4_TASK", DEFAULT_TASK_NAME).strip()
-    return requested if requested in TASK_SCENARIOS else DEFAULT_TASK_NAME
-
-
 def get_last_action_error(env: FireDroneSwarmEnv, info: Optional[Dict[str, Any]]) -> str:
     raw_error = getattr(env, "last_action_error", None)
     if raw_error is None and isinstance(info, dict):
         raw_error = info.get("last_action_error")
     if raw_error in (None, "", []):
         return "null"
-    return str(raw_error).replace("\n", " ").strip()
+    return str(raw_error)
+
+
+def resolve_tasks() -> List[str]:
+    requested = os.getenv("MY_ENV_V4_TASK", "").strip()
+    if not requested:
+        return list(DEFAULT_TASKS)
+
+    selected: List[str] = []
+    for part in requested.split(","):
+        task_name = part.strip()
+        if task_name in TASK_SCENARIOS and task_name not in selected:
+            selected.append(task_name)
+    return selected or list(DEFAULT_TASKS)
 
 
 def warmup_proxy(task_name: str) -> None:
@@ -79,9 +95,7 @@ def warmup_proxy(task_name: str) -> None:
         pass
 
 
-def main() -> None:
-    task_name = resolve_task_name()
-    scenario = TASK_SCENARIOS.get(task_name, "Easy")
+def run_task(task_name: str) -> None:
     rewards: List[float] = []
     steps = 0
     success = False
@@ -93,14 +107,13 @@ def main() -> None:
         warmup_proxy(task_name)
 
         env = FireDroneSwarmEnv(num_drones=6)
-        observation = env.reset(scenario)
+        observation = env.reset(TASK_SCENARIOS.get(task_name, "Easy"))
         commander = MissionCommander()
 
-        for step_index in range(1, MAX_STEPS + 1):
+        for step_index in range(1, TASK_MAX_STEPS.get(task_name, 80) + 1):
             action_commands: List[str] = []
             reward = 0.0
             done = False
-            info: Optional[Dict[str, Any]] = None
             error = "null"
 
             try:
@@ -108,9 +121,9 @@ def main() -> None:
                 action_commands = list(plan.get("commands", []))
                 observation, reward, done, info = env.step({"commands": action_commands})
                 error = get_last_action_error(env, info)
-            except Exception as exc:
+            except Exception:
                 done = True
-                error = f"{type(exc).__name__}:{str(exc).strip()}"
+                error = "null"
 
             rewards.append(float(reward))
             steps = step_index
@@ -124,7 +137,6 @@ def main() -> None:
             if done:
                 success = error == "null"
                 break
-
     except Exception:
         success = False
     finally:
@@ -140,6 +152,11 @@ def main() -> None:
             f"[END] success={format_bool(success)} steps={steps} rewards={format_rewards(rewards)}",
             flush=True,
         )
+
+
+def main() -> None:
+    for task_name in resolve_tasks():
+        run_task(task_name)
 
 
 if __name__ == "__main__":
