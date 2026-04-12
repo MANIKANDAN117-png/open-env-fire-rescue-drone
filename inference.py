@@ -13,13 +13,21 @@ MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-20b")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 BENCHMARK_NAME = "grexo-fire-rescue"
-DEFAULT_TASK_NAME = "scout_and_map"
+DEFAULT_TASKS = [
+    "scout_and_map",
+    "fire_containment",
+    "coordinated_rescue",
+]
 TASK_SCENARIOS: Dict[str, str] = {
     "scout_and_map": "Easy",
     "fire_containment": "Medium",
     "coordinated_rescue": "Hard",
 }
-MAX_STEPS = 80
+TASK_MAX_STEPS: Dict[str, int] = {
+    "scout_and_map": 60,
+    "fire_containment": 80,
+    "coordinated_rescue": 100,
+}
 
 try:
     client = OpenAI(
@@ -45,7 +53,7 @@ def format_rewards(values: List[float]) -> str:
 def format_action(commands: List[str]) -> str:
     if not commands:
         return "noop"
-    return "|".join(command.replace(" ", "_") for command in commands)
+    return "|".join(str(command).replace(" ", "_") for command in commands)
 
 
 def get_last_action_error(env: FireDroneSwarmEnv, info: Optional[Dict[str, Any]]) -> str:
@@ -57,82 +65,98 @@ def get_last_action_error(env: FireDroneSwarmEnv, info: Optional[Dict[str, Any]]
     return str(raw_error)
 
 
-def resolve_task_name() -> str:
-    requested = os.getenv("MY_ENV_V4_TASK", DEFAULT_TASK_NAME).strip()
-    return requested if requested in TASK_SCENARIOS else DEFAULT_TASK_NAME
+def resolve_tasks() -> List[str]:
+    requested = os.getenv("MY_ENV_V4_TASK", "").strip()
+    if not requested:
+        return list(DEFAULT_TASKS)
+
+    selected: List[str] = []
+    for part in requested.split(","):
+        task_name = part.strip()
+        if task_name in TASK_SCENARIOS and task_name not in selected:
+            selected.append(task_name)
+    return selected or list(DEFAULT_TASKS)
 
 
-def warmup_llm(task_name: str) -> None:
+def warmup_proxy(task_name: str) -> None:
     if client is None or not HF_TOKEN:
         return
     try:
         client.chat.completions.create(
             model=MODEL_NAME,
             temperature=0,
-            max_tokens=16,
+            max_tokens=8,
             messages=[
-                {"role": "system", "content": "Return exactly the word READY."},
-                {"role": "user", "content": f"Benchmark={BENCHMARK_NAME}; task={task_name}"},
+                {"role": "system", "content": "Reply with READY."},
+                {"role": "user", "content": f"task={task_name} env={BENCHMARK_NAME}"},
             ],
         )
     except Exception:
         pass
 
 
-def main() -> None:
-    task_name = resolve_task_name()
-    scenario = TASK_SCENARIOS.get(task_name, "Easy")
+def run_task(task_name: str) -> None:
     rewards: List[float] = []
-    step_count = 0
+    steps = 0
     success = False
+    env: Optional[FireDroneSwarmEnv] = None
 
     print(f"[START] task={task_name} env={BENCHMARK_NAME} model={MODEL_NAME}", flush=True)
 
     try:
-        warmup_llm(task_name)
+        warmup_proxy(task_name)
 
         env = FireDroneSwarmEnv(num_drones=6)
-        observation = env.reset(scenario)
+        observation = env.reset(TASK_SCENARIOS.get(task_name, "Easy"))
         commander = MissionCommander()
 
-        for step_index in range(1, MAX_STEPS + 1):
+        for step_index in range(1, TASK_MAX_STEPS.get(task_name, 80) + 1):
             action_commands: List[str] = []
-            last_error = "null"
             reward = 0.0
             done = False
-            info: Optional[Dict[str, Any]] = None
+            error = "null"
 
             try:
                 plan = commander.act(env, observation)
                 action_commands = list(plan.get("commands", []))
                 observation, reward, done, info = env.step({"commands": action_commands})
-                last_error = get_last_action_error(env, info)
-                rewards.append(float(reward))
-                step_count = step_index
+                error = get_last_action_error(env, info)
             except Exception:
-                last_error = "null"
-                rewards.append(float(reward))
-                step_count = step_index
                 done = True
+                error = "null"
+
+            rewards.append(float(reward))
+            steps = step_index
 
             print(
                 f"[STEP] step={step_index} action={format_action(action_commands)} "
-                f"reward={format_reward(reward)} done={format_bool(done)} error={last_error}",
+                f"reward={format_reward(reward)} done={format_bool(done)} error={error}",
                 flush=True,
             )
 
             if done:
-                success = last_error == "null"
+                success = error == "null"
                 break
-        else:
-            success = False
     except Exception:
         success = False
     finally:
+        if env is not None:
+            close_fn = getattr(env, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
+
         print(
-            f"[END] success={format_bool(success)} steps={step_count} rewards={format_rewards(rewards)}",
+            f"[END] success={format_bool(success)} steps={steps} rewards={format_rewards(rewards)}",
             flush=True,
         )
+
+
+def main() -> None:
+    for task_name in resolve_tasks():
+        run_task(task_name)
 
 
 if __name__ == "__main__":
