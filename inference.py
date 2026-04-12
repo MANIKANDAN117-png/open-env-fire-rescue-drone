@@ -46,6 +46,10 @@ def format_reward(value: float) -> str:
     return f"{float(value):.2f}"
 
 
+def clamp_score(value: float) -> float:
+    return float(max(0.01, min(0.99, float(value))))
+
+
 def format_rewards(values: List[float]) -> str:
     return ",".join(format_reward(value) for value in values)
 
@@ -100,6 +104,7 @@ def run_task(task_name: str) -> None:
     steps = 0
     success = False
     env: Optional[FireDroneSwarmEnv] = None
+    final_score = 0.01
 
     print(f"[START] task={task_name} env={BENCHMARK_NAME} model={MODEL_NAME}", flush=True)
 
@@ -121,6 +126,7 @@ def run_task(task_name: str) -> None:
                 action_commands = list(plan.get("commands", []))
                 observation, reward, done, info = env.step({"commands": action_commands})
                 error = get_last_action_error(env, info)
+                final_score = clamp_score(info.get("graders", {}).get(task_name, final_score))
             except Exception:
                 done = True
                 error = "null"
@@ -149,7 +155,8 @@ def run_task(task_name: str) -> None:
                     pass
 
         print(
-            f"[END] success={format_bool(success)} steps={steps} rewards={format_rewards(rewards)}",
+            f"[END] task={task_name} score={format_reward(final_score)} "
+            f"success={format_bool(success)} steps={steps} rewards={format_rewards(rewards)}",
             flush=True,
         )
 
