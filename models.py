@@ -49,6 +49,9 @@ class CoordinationSummary(BaseModel):
 
 
 class GraderSummary(BaseModel):
+    scout_and_map: float = Field(..., gt=0.0, lt=1.0)
+    fire_containment: float = Field(..., gt=0.0, lt=1.0)
+    coordinated_rescue: float = Field(..., gt=0.0, lt=1.0)
     task1_scout_map: float = Field(..., gt=0.0, lt=1.0)
     task2_containment: float = Field(..., gt=0.0, lt=1.0)
     task3_coordinated_rescue: float = Field(..., gt=0.0, lt=1.0)
