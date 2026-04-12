@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 try:
     from pydantic import BaseModel, Field
@@ -27,6 +27,10 @@ except ImportError:  # pragma: no cover - lightweight fallback for minimal envir
 
 Coordinate = Tuple[int, int]
 Direction = str
+
+
+def manhattan(a: Coordinate, b: Coordinate) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
 class Observation(BaseModel):
@@ -139,6 +143,17 @@ class FireDroneSwarmEnv:
         },
     }
 
+    TASK_DIFFICULTIES = {
+        "task1_scout_map": "easy",
+        "task2_containment": "medium",
+        "task3_coordinated_rescue": "hard",
+    }
+    APPROVE_BUG_PENALTY = {"easy": 0.40, "medium": 0.50, "hard": 0.60}
+    MISSED_BUG_PENALTY = {"easy": 0.04, "medium": 0.045, "hard": 0.05}
+    FALSE_POSITIVE_PENALTY = 0.02
+    CONSISTENCY_BONUS = {"easy": 0.05, "medium": 0.10, "hard": 0.15}
+    EXPLANATION_BONUS = {"easy": 0.0, "medium": 0.01, "hard": 0.04}
+
     def __init__(self, num_drones: int = 6, max_steps: int = 180) -> None:
         self.width = 15
         self.height = 15
@@ -167,6 +182,8 @@ class FireDroneSwarmEnv:
         self.fire_blocking_civilian_cleared = False
         self.fire_suppression_drone_ids: Set[str] = set()
         self.path_projection_drone_ids: Set[str] = set()
+        self.task_step_history: Dict[str, List[Dict[str, Any]]] = {}
+        self.last_action_error: Optional[str] = None
         self.scenario = "Medium"
         self.profile = deepcopy(self.SCENARIO_PROFILES[self.scenario])
 
@@ -186,6 +203,12 @@ class FireDroneSwarmEnv:
         self.civilian_discovered_with_power = False
         self.civilian_reached_exit = False
         self.fire_blocking_civilian_cleared = False
+        self.last_action_error = None
+        self.task_step_history = {
+            "task1_scout_map": [],
+            "task2_containment": [],
+            "task3_coordinated_rescue": [],
+        }
 
         self.city_grid_true = [[self.EMPTY for _ in range(self.width)] for _ in range(self.height)]
         self.visible_mask = [[False for _ in range(self.width)] for _ in range(self.height)]
@@ -199,6 +222,9 @@ class FireDroneSwarmEnv:
         self._reveal_around_point(self.base_station, 3)
         self._refresh_visibility()
         return self.state()
+
+    def close(self) -> None:
+        return None
 
     def state(self) -> Dict[str, Any]:
         observation = Observation(
@@ -215,9 +241,12 @@ class FireDroneSwarmEnv:
         action: Action | Dict[str, Any] | List[str],
     ) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         self.step_count += 1
+        self.last_action_error = None
         reward = -float(self.profile["step_penalty"])
         parsed = self._normalize_action(action)
         commands_by_drone = self._parse_commands(parsed.commands)
+        resolved_command_names = self._resolved_command_names(commands_by_drone)
+        before = self._capture_snapshot()
         info: Dict[str, Any] = {"events": []}
 
         for drone_id, drone in self.drones.items():
@@ -234,6 +263,8 @@ class FireDroneSwarmEnv:
         info["events"].extend(civilian_events)
 
         self._refresh_visibility()
+        after = self._capture_snapshot()
+        self._record_task_rewards(resolved_command_names, before, after)
 
         info["graders"] = {
             "task1_scout_map": self.grade_task1_scout_and_map(),
@@ -243,6 +274,7 @@ class FireDroneSwarmEnv:
         info["fire_tiles_remaining"] = len(self.fire_intensity)
         info["civilian_position"] = self.civilian_pos
         info["civilian_reached_exit"] = self.civilian_reached_exit
+        info["last_action_error"] = self.last_action_error
         info["coordination"] = {
             "blocking_fire_cleared": self.fire_blocking_civilian_cleared,
             "suppression_drones": sorted(self.fire_suppression_drone_ids),
@@ -253,27 +285,40 @@ class FireDroneSwarmEnv:
         return self.state(), float(round(reward, 3)), done, info
 
     def grade_task1_scout_and_map(self) -> float:
-        raw_score = 0.99 if self.civilian_discovered_with_power else 0.01
-        return self._bounded_score(raw_score)
+        return self._aggregate_task_score("task1_scout_map")
 
     def grade_task2_containment(self) -> float:
-        if self.initial_fire_tiles == 0:
-            return self._bounded_score(0.99)
-        cleared = self.initial_fire_tiles - len(self.fire_intensity)
-        raw_score = cleared / self.initial_fire_tiles
-        return self._bounded_score(raw_score)
+        return self._aggregate_task_score("task2_containment")
 
     def grade_task3_coordinated_rescue(self) -> float:
-        progress = 0.01
-        if self.fire_suppression_drone_ids:
-            progress += 0.24
-        if self.path_projection_drone_ids:
-            progress += 0.24
-        if not self.fire_intensity:
-            progress += 0.24
-        if self.civilian_reached_exit:
-            progress += 0.26
-        return self._bounded_score(progress)
+        return self._aggregate_task_score("task3_coordinated_rescue")
+
+    def _aggregate_task_score(self, task_key: str) -> float:
+        history = self.task_step_history.get(task_key, [])
+        if not history:
+            return self._bounded_score(0.01)
+
+        difficulty = self.TASK_DIFFICULTIES[task_key]
+        step_scores = [float(entry["score"]) for entry in history]
+        base_score = sum(step_scores) / len(step_scores)
+
+        approve_bug_count = sum(1 for entry in history if entry["category"] == "catastrophic")
+        missed_bug_count = sum(1 for entry in history if entry["category"] == "missed_bug")
+        false_positive_count = sum(1 for entry in history if entry["category"] == "false_positive")
+        correct_steps = sum(1 for entry in history if float(entry["score"]) >= 0.70)
+        perfect_steps = sum(1 for entry in history if abs(float(entry["score"]) - 0.90) < 1e-9)
+
+        score = base_score
+        score -= min(0.45, approve_bug_count * self.APPROVE_BUG_PENALTY[difficulty])
+        score -= min(0.20, missed_bug_count * self.MISSED_BUG_PENALTY[difficulty])
+        score -= min(0.10, false_positive_count * self.FALSE_POSITIVE_PENALTY)
+
+        if correct_steps / len(history) >= 0.80:
+            score += self.CONSISTENCY_BONUS[difficulty]
+        if perfect_steps / len(history) >= 0.80:
+            score += self.EXPLANATION_BONUS[difficulty]
+
+        return self._bounded_score(score)
 
     def _bounded_score(self, raw_score: float) -> float:
         return float(round(max(0.01, min(0.99, raw_score)), 3))
@@ -288,6 +333,184 @@ class FireDroneSwarmEnv:
             "rescue_reward": float(self.profile["rescue_reward"]),
             "containment_reward": float(self.profile["extinguish_reward"]),
         }
+
+    def _capture_snapshot(self) -> Dict[str, Any]:
+        return {
+            "discovered": bool(self.civilian_discovered_with_power or self.civilian_discovered),
+            "fire_count": len(self.fire_intensity),
+            "fire_positions": list(self.fire_intensity.keys()),
+            "fire_near_civilian": any(self._is_fire_adjacent_to_civilian(pos) for pos in self.fire_intensity),
+            "civilian_pos": self.civilian_pos,
+            "civilian_reached_exit": self.civilian_reached_exit,
+            "projected_count": len(self.projected_paths),
+            "rescue_near": self._role_near_civilian({"rescue"}),
+            "guide_near": self._role_near_civilian({"guide"}),
+            "drone_positions": {
+                drone_id: (drone["x"], drone["y"])
+                for drone_id, drone in self.drones.items()
+            },
+        }
+
+    def _role_near_civilian(self, roles: Set[str]) -> bool:
+        return any(
+            drone["role"] in roles
+            and manhattan((drone["x"], drone["y"]), self.civilian_pos) <= 1
+            for drone in self.drones.values()
+        )
+
+    def _average_role_distance(
+        self,
+        positions: Dict[str, Coordinate],
+        roles: Set[str],
+        target: Coordinate,
+    ) -> float:
+        distances = [
+            float(manhattan(positions[drone_id], target))
+            for drone_id, drone in self.drones.items()
+            if drone["role"] in roles and drone_id in positions
+        ]
+        return sum(distances) / len(distances) if distances else float("inf")
+
+    def _average_fire_distance(
+        self,
+        positions: Dict[str, Coordinate],
+        roles: Set[str],
+        fire_positions: Sequence[Coordinate],
+    ) -> float:
+        if not fire_positions:
+            return 0.0
+        distances: List[float] = []
+        for drone_id, drone in self.drones.items():
+            if drone["role"] not in roles or drone_id not in positions:
+                continue
+            distances.append(
+                float(min(manhattan(positions[drone_id], fire_pos) for fire_pos in fire_positions))
+            )
+        return sum(distances) / len(distances) if distances else float("inf")
+
+    def _record_task_rewards(
+        self,
+        command_names: List[str],
+        before: Dict[str, Any],
+        after: Dict[str, Any],
+    ) -> None:
+        if not before["discovered"]:
+            self.task_step_history["task1_scout_map"].append(
+                self._evaluate_task1_step(command_names, before, after)
+            )
+        if before["fire_count"] > 0:
+            self.task_step_history["task2_containment"].append(
+                self._evaluate_task2_step(command_names, before, after)
+            )
+        if before["fire_count"] == 0 and not before["civilian_reached_exit"]:
+            self.task_step_history["task3_coordinated_rescue"].append(
+                self._evaluate_task3_step(command_names, before, after)
+            )
+
+    def _evaluate_task1_step(
+        self,
+        command_names: List[str],
+        before: Dict[str, Any],
+        after: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        has_scan = "scan" in command_names
+        has_move = "move" in command_names
+        has_suppress = any(name in {"spray", "drop_ball"} for name in command_names)
+        has_path = "project_path" in command_names
+
+        prev_distance = self._average_role_distance(before["drone_positions"], {"rescue", "guide"}, before["civilian_pos"])
+        next_distance = self._average_role_distance(after["drone_positions"], {"rescue", "guide"}, before["civilian_pos"])
+        moved_closer = next_distance < prev_distance
+
+        if after["discovered"] and has_scan:
+            return {"score": 0.90, "category": "perfect"}
+        if after["discovered"]:
+            return {"score": 0.88, "category": "near_perfect"}
+        if has_scan:
+            return {"score": 0.82, "category": "partial"}
+        if has_move and moved_closer:
+            return {"score": 0.88, "category": "near_perfect"}
+        if has_move:
+            return {"score": 0.76, "category": "partial"}
+        if has_suppress or has_path:
+            return {"score": 0.15, "category": "false_positive"}
+        if all(name == "noop" for name in command_names):
+            return {"score": 0.30, "category": "missed_bug"}
+        return {"score": 0.50, "category": "cautious"}
+
+    def _evaluate_task2_step(
+        self,
+        command_names: List[str],
+        before: Dict[str, Any],
+        after: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        has_suppress = any(name in {"spray", "drop_ball"} for name in command_names)
+        has_move = "move" in command_names
+        fire_delta = before["fire_count"] - after["fire_count"]
+
+        prev_distance = self._average_fire_distance(before["drone_positions"], {"extinguish"}, before["fire_positions"])
+        next_distance = self._average_fire_distance(after["drone_positions"], {"extinguish"}, after["fire_positions"])
+        moved_closer = next_distance < prev_distance
+
+        if has_suppress and fire_delta > 0:
+            if after["fire_count"] == 0 or fire_delta >= 2:
+                return {"score": 0.90, "category": "perfect"}
+            return {"score": 0.88, "category": "near_perfect"}
+        if before["fire_near_civilian"] and not has_suppress and not moved_closer:
+            return {"score": 0.10, "category": "catastrophic"}
+        if has_suppress:
+            return {"score": 0.15, "category": "false_positive"}
+        if has_move and moved_closer:
+            return {"score": 0.76, "category": "partial"}
+        if has_move:
+            return {"score": 0.70, "category": "partial"}
+        if "scan" in command_names or "project_path" in command_names:
+            return {"score": 0.50, "category": "cautious"}
+        if all(name == "noop" for name in command_names):
+            return {"score": 0.30, "category": "missed_bug"}
+        return {"score": 0.30, "category": "missed_bug"}
+
+    def _evaluate_task3_step(
+        self,
+        command_names: List[str],
+        before: Dict[str, Any],
+        after: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        has_move = "move" in command_names
+        has_suppress = any(name in {"spray", "drop_ball"} for name in command_names)
+        path_growth = after["projected_count"] > before["projected_count"]
+        civilian_advanced = after["civilian_pos"] != before["civilian_pos"]
+        escort_near = after["rescue_near"] or after["guide_near"]
+
+        prev_distance = self._average_role_distance(before["drone_positions"], {"rescue", "guide"}, before["civilian_pos"])
+        next_distance = self._average_role_distance(after["drone_positions"], {"rescue", "guide"}, after["civilian_pos"])
+        escort_moved_closer = next_distance < prev_distance
+
+        if after["civilian_reached_exit"]:
+            if civilian_advanced and (path_growth or escort_near):
+                return {"score": 0.90, "category": "perfect"}
+            return {"score": 0.88, "category": "near_perfect"}
+        if path_growth and escort_near:
+            return {"score": 0.90, "category": "perfect"}
+        if civilian_advanced and escort_near:
+            return {"score": 0.88, "category": "near_perfect"}
+        if path_growth or escort_moved_closer or escort_near:
+            return {"score": 0.76, "category": "partial"}
+        if has_suppress:
+            return {"score": 0.15, "category": "false_positive"}
+        if has_move:
+            return {"score": 0.70, "category": "partial"}
+        if "scan" in command_names:
+            return {"score": 0.50, "category": "cautious"}
+        if all(name == "noop" for name in command_names):
+            return {"score": 0.30, "category": "missed_bug"}
+        return {"score": 0.30, "category": "missed_bug"}
+
+    def _resolved_command_names(self, commands_by_drone: Dict[str, Tuple[str, List[str]]]) -> List[str]:
+        return [
+            commands_by_drone.get(drone_id, ("noop", []))[0]
+            for drone_id in sorted(self.drones)
+        ]
 
     def _build_city_and_building(self) -> None:
         for x in range(self.width):
@@ -388,13 +611,18 @@ class FireDroneSwarmEnv:
         for raw in commands:
             raw = raw.strip()
             if not raw.endswith(")") or "(" not in raw:
+                self.last_action_error = raw
                 continue
             name, remainder = raw.split("(", 1)
             args_text = remainder[:-1]
             args = [item.strip() for item in args_text.split(",") if item.strip()]
             if not args:
+                self.last_action_error = raw
                 continue
             drone_id = args[0]
+            if drone_id not in self.drones:
+                self.last_action_error = raw
+                continue
             parsed[drone_id] = (name.strip(), args[1:])
         return parsed
 
@@ -409,6 +637,7 @@ class FireDroneSwarmEnv:
         drone_id = drone["id"]
 
         if drone["battery_level"] <= 0:
+            self.last_action_error = self.last_action_error or f"{drone_id}_out_of_battery"
             return -10.0, [f"{drone_id} is out of battery."]
 
         if command_name == "noop":
@@ -419,10 +648,12 @@ class FireDroneSwarmEnv:
 
         if command_name == "move":
             if not args:
+                self.last_action_error = self.last_action_error or "move_missing_direction"
                 return reward, events
             direction = args[0]
             delta = self.DIRECTIONS.get(direction)
             if not delta:
+                self.last_action_error = self.last_action_error or f"invalid_direction_{direction}"
                 return reward, events
             nxt = (drone["x"] + delta[0], drone["y"] + delta[1])
             if self._can_enter(nxt):
@@ -450,10 +681,12 @@ class FireDroneSwarmEnv:
 
         if command_name == "spray":
             if drone["payload_capacity"] <= 0 or not args:
+                self.last_action_error = self.last_action_error or "spray_unavailable"
                 return reward, events
             direction = args[0]
             delta = self.DIRECTIONS.get(direction)
             if not delta:
+                self.last_action_error = self.last_action_error or f"invalid_direction_{direction}"
                 return reward, events
             target = (drone["x"] + delta[0], drone["y"] + delta[1])
             drone["payload_capacity"] = max(0.0, drone["payload_capacity"] - 1.0)
@@ -464,6 +697,7 @@ class FireDroneSwarmEnv:
 
         if command_name == "drop_ball":
             if drone["payload_capacity"] <= 0:
+                self.last_action_error = self.last_action_error or "drop_ball_unavailable"
                 return reward, events
             extinguished_before = len(self.fire_intensity)
             for y in range(drone["y"] - 1, drone["y"] + 2):
@@ -476,10 +710,12 @@ class FireDroneSwarmEnv:
 
         if command_name == "project_path":
             if not args:
+                self.last_action_error = self.last_action_error or "project_path_missing_direction"
                 return reward, events
             direction = args[0]
             delta = self.DIRECTIONS.get(direction)
             if not delta:
+                self.last_action_error = self.last_action_error or f"invalid_direction_{direction}"
                 return reward, events
             cursor = (drone["x"], drone["y"])
             for _ in range(4):
@@ -498,6 +734,7 @@ class FireDroneSwarmEnv:
             events.append(f"{drone_id} projected a safe path {direction}.")
             return reward, events
 
+        self.last_action_error = self.last_action_error or f"unsupported_command_{command_name}"
         return reward, events
 
     def _reduce_fire(self, target: Coordinate, amount: int, drone_id: str) -> float:
@@ -521,7 +758,7 @@ class FireDroneSwarmEnv:
         escort_nearby = any(
             drone["role"] in {"rescue", "guide"}
             and drone["battery_level"] > 0
-            and abs(drone["x"] - self.civilian_pos[0]) + abs(drone["y"] - self.civilian_pos[1]) <= 1
+            and manhattan((drone["x"], drone["y"]), self.civilian_pos) <= 1
             for drone in self.drones.values()
         )
         if not escort_nearby:
@@ -571,7 +808,7 @@ class FireDroneSwarmEnv:
             for x in range(center[0] - radius, center[0] + radius + 1):
                 if not self._in_bounds((x, y)):
                     continue
-                if abs(center[0] - x) + abs(center[1] - y) <= radius + 1:
+                if manhattan(center, (x, y)) <= radius + 1:
                     self.visible_mask[y][x] = True
 
     def _bfs_path(self, start: Coordinate, goal: Coordinate) -> Optional[List[Coordinate]]:
@@ -604,7 +841,7 @@ class FireDroneSwarmEnv:
         return path
 
     def _is_fire_adjacent_to_civilian(self, fire_pos: Coordinate) -> bool:
-        return abs(fire_pos[0] - self.civilian_pos[0]) + abs(fire_pos[1] - self.civilian_pos[1]) <= 1
+        return manhattan(fire_pos, self.civilian_pos) <= 1
 
     def _can_enter(self, pos: Coordinate) -> bool:
         if not self._in_bounds(pos):
