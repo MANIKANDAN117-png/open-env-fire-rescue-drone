@@ -266,10 +266,16 @@ class FireDroneSwarmEnv:
         after = self._capture_snapshot()
         self._record_task_rewards(resolved_command_names, before, after)
 
+        scout_score = self.grade_task1_scout_and_map()
+        containment_score = self.grade_task2_containment()
+        rescue_score = self.grade_task3_coordinated_rescue()
         info["graders"] = {
-            "task1_scout_map": self.grade_task1_scout_and_map(),
-            "task2_containment": self.grade_task2_containment(),
-            "task3_coordinated_rescue": self.grade_task3_coordinated_rescue(),
+            "scout_and_map": scout_score,
+            "fire_containment": containment_score,
+            "coordinated_rescue": rescue_score,
+            "task1_scout_map": scout_score,
+            "task2_containment": containment_score,
+            "task3_coordinated_rescue": rescue_score,
         }
         info["fire_tiles_remaining"] = len(self.fire_intensity)
         info["civilian_position"] = self.civilian_pos
